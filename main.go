@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"strings"
 
 	"github.com/dmdhrumilmistry/masshog/pkg/github"
 	_ "github.com/dmdhrumilmistry/masshog/pkg/logging"
@@ -26,13 +25,9 @@ func main() {
 	repo := github.Repo{
 		HttpsUrl: "https://github.com/OWASP/OFFAT.git",
 	}
-	result, err := th.ScanRepo(repo)
-
-	if err != nil {
+	if err := th.ScanRepo(repo); err != nil {
 		log.Fatal().Err(err).Msgf("failed to scan repo: %v", repo)
 	}
-
-	log.Info().Msgf("%v", strings.Split(result.Stdout, "\n"))
 
 	log.Info().Msgf("%v", th)
 	log.Info().Int("workers", *workers).Msg("")
