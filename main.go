@@ -50,6 +50,7 @@ func main() {
 	filePath := flag.String("f", "", "file path containing github repo https urls on each line")
 	concurrency := flag.Int("c", 10, "trufflehog scan concurrency")
 	onlyVerified := flag.Bool("ov", false, "only provides verified secrets in output")
+	batchSize := flag.Int("bs", 100, "batch processing size")
 	flag.Parse()
 
 	if *filePath == "" {
@@ -69,8 +70,15 @@ func main() {
 	}
 	log.Info().Msgf("%v", repos)
 
+	// adjust batch size
+	if *batchSize > len(repos) {
+		*batchSize = len(repos)
+	}
+
+	log.Debug().Int("batch size", *batchSize).Msg("")
+
 	// add jobs and init scan using workers
-	th := trufflehog.NewTrufflehog(thPath, *concurrency, *workers, *onlyVerified)
+	th := trufflehog.NewTrufflehog(thPath, *workers, *batchSize, *concurrency, *onlyVerified)
 	th.AddJobs(repos)
 	th.RunWorkers()
 

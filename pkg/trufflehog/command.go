@@ -30,13 +30,16 @@ type Trufflehog struct {
 	results chan error
 }
 
-func NewTrufflehog(path string, concurrency, workers int, onlyVerified bool) *Trufflehog {
-	return &Trufflehog{
+func NewTrufflehog(path string, workers, batchSize, concurrency int, onlyVerified bool) *Trufflehog {
+	th := &Trufflehog{
 		Path:         path,
 		Concurrency:  concurrency,
 		OnlyVerified: onlyVerified,
 		Workers:      workers,
 	}
+
+	th.InitChannels(batchSize)
+	return th
 }
 
 func (th *Trufflehog) InitChannels(bufferSize int) {
