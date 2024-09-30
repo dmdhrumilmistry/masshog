@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"flag"
+	"os"
+	"strings"
 
 	"github.com/dmdhrumilmistry/masshog/pkg/github"
 	_ "github.com/dmdhrumilmistry/masshog/pkg/logging"
@@ -10,25 +13,66 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// ReadReposFromFile reads repository URLs from a file and returns a slice of Repo objects.
+func ReadReposFromFile(filePath string) ([]github.Repo, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var repos []github.Repo
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line != "" {
+			parts := strings.Split(line, "/")
+			size := len(parts)
+			owner := parts[size-2]
+			name := strings.Split(parts[size-1], ".git")[0]
+			repos = append(repos, github.Repo{
+				HttpsUrl: line,
+				Owner:    owner,
+				Name:     name,
+			})
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return repos, nil
+}
+
 func main() {
 	workers := flag.Int("w", 20, "number of concurrent workers")
+	filePath := flag.String("f", "", "file path containing github repo https urls on each line")
 	concurrency := flag.Int("c", 10, "trufflehog scan concurrency")
-	onlyVerified := flag.Bool("ov", true, "only provides verified secrets in output")
+	onlyVerified := flag.Bool("ov", false, "only provides verified secrets in output")
 	flag.Parse()
 
+	if *filePath == "" {
+		log.Fatal().Msgf("file path is required. use -h flag for more info")
+	}
+
+	// check whether trufflehog is installed
 	thPath := utils.IsTrufflehogInstalled()
 	if thPath == "" {
 		log.Fatal().Msgf("Trufflehog binary is required to be in path for this tool to run! Please install and retry")
 	}
 
-	th := trufflehog.NewTrufflehog(thPath, *concurrency, *onlyVerified)
-	repo := github.Repo{
-		HttpsUrl: "https://github.com/OWASP/OFFAT.git",
+	// Read repos list from file
+	repos, err := ReadReposFromFile(*filePath)
+	if err != nil {
+		log.Fatal().Err(err).Msgf("failed to read repos list from the file %s", *filePath)
 	}
-	if err := th.ScanRepo(repo); err != nil {
-		log.Fatal().Err(err).Msgf("failed to scan repo: %v", repo)
-	}
+	log.Info().Msgf("%v", repos)
+
+	// add jobs and init scan using workers
+	th := trufflehog.NewTrufflehog(thPath, *concurrency, *workers, *onlyVerified)
+	th.AddJobs(repos)
+	th.RunWorkers()
 
 	log.Info().Msgf("%v", th)
-	log.Info().Int("workers", *workers).Msg("")
 }

@@ -14,23 +14,38 @@ import (
 
 type Trufflehog struct {
 	Path         string // binary path
-	Concurrency  int    // concurreny to be used for scanning
+	Concurrency  int    // trufflehog concurreny to be used for scanning
+	Workers      int    // golang concurrency workers
 	OnlyVerified bool   // only verified flag from trufflehog
 
 	// For Processing
-	dataIgnored    []map[string]interface{}
-	dataVerified   []map[string]interface{}
-	dataUnverified []map[string]interface{}
+	DataIgnored    []map[string]interface{}
+	DataVerified   []map[string]interface{}
+	DataUnverified []map[string]interface{}
 	exceptions     []error
 	lock           sync.Mutex
+
+	// Channels for worker pattern
+	jobs    chan github.Repo
+	results chan error
 }
 
-func NewTrufflehog(path string, concurrency int, onlyVerified bool) *Trufflehog {
+func NewTrufflehog(path string, concurrency, workers int, onlyVerified bool) *Trufflehog {
 	return &Trufflehog{
 		Path:         path,
 		Concurrency:  concurrency,
 		OnlyVerified: onlyVerified,
+		Workers:      workers,
 	}
+}
+
+func (th *Trufflehog) InitChannels(bufferSize int) {
+	th.jobs = make(chan github.Repo, bufferSize)
+	th.results = make(chan error, bufferSize)
+}
+
+func (th *Trufflehog) CloseChannels() {
+	close(th.results)
 }
 
 func (t *Trufflehog) ScanRepo(repo github.Repo) error {
@@ -96,21 +111,54 @@ func (t *Trufflehog) ScanRepo(repo github.Repo) error {
 
 		if strings.Contains(line, `"Verified":true`) {
 			t.lock.Lock()
-			if !containsRaw(t.dataVerified, jline["Raw"].(string)) {
-				t.dataVerified = append(t.dataVerified, jline)
+			if !containsRaw(t.DataVerified, jline["Raw"].(string)) {
+				t.DataVerified = append(t.DataVerified, jline)
 			}
 			t.lock.Unlock()
 
 		} else if strings.Contains(line, `"Verified":false`) {
 			t.lock.Lock()
-			if !contains(t.dataUnverified, jline) {
-				t.dataUnverified = append(t.dataUnverified, jline)
+			if !contains(t.DataUnverified, jline) {
+				t.DataUnverified = append(t.DataUnverified, jline)
 			}
 			t.lock.Unlock()
 		}
 
 	}
 	return nil
+}
+
+// AddJobs sends repositories to the jobs channel.
+func (th *Trufflehog) AddJobs(repos []github.Repo) {
+	for _, repo := range repos {
+		th.jobs <- repo
+	}
+	close(th.jobs) // Close the jobs channel after adding all jobs.
+}
+
+func (th *Trufflehog) RunWorkers() {
+	var wg sync.WaitGroup
+
+	for i := 0; i < th.Workers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for repo := range th.jobs {
+				log.Info().Msgf("Worker %d scanning %s\n", id, repo.HttpsUrl)
+				err := th.ScanRepo(repo)
+				th.lock.Lock()
+				if err != nil {
+					th.exceptions = append(th.exceptions, err)
+					log.Error().Err(err).Msgf("Worker %d: failed to scan repo: %s", id, repo.HttpsUrl)
+				}
+				th.lock.Unlock()
+				th.results <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	th.CloseChannels()
 }
 
 func contains(slice []map[string]interface{}, item map[string]interface{}) bool {
