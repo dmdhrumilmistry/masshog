@@ -58,7 +58,7 @@ func main() {
 	token := flag.String("gt", "", "github token for scanning private repos")
 
 	outputFile := flag.String("o", "results.json", "file path for storing json result file")
-	commitHashMapFile := flag.String("chm", "", "file path for loading and storing commit hash map")
+	commitHashMapFile := flag.String("s", "state.json", "file path for loading and storing commit hash map state")
 
 	flag.Parse()
 
