@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/dmdhrumilmistry/masshog/pkg/github"
 	_ "github.com/dmdhrumilmistry/masshog/pkg/logging"
@@ -57,6 +58,7 @@ func main() {
 	token := flag.String("gt", "", "github token for scanning private repos")
 
 	outputFile := flag.String("o", "results.json", "file path for storing json result file")
+	commitHashMapFile := flag.String("chm", "", "file path for loading and storing commit hash map")
 
 	flag.Parse()
 
@@ -86,10 +88,27 @@ func main() {
 
 	// add jobs and init scan using workers
 	th := trufflehog.NewTrufflehog(thPath, *workers, *batchSize, *concurrency, *timeout, *onlyVerified, *username, *token)
+
+	// read commit hash map
+	if err := utils.ReadSyncMapFromJsonFile(&th.CommitHashStateMap, *commitHashMapFile); err != nil {
+		log.Error().Err(err).Msgf("Failed to load commit hash map from file: %s", *commitHashMapFile)
+		th.CommitHashStateMap = sync.Map{}
+	}
+
 	th.AddJobs(repos)
 	th.RunWorkers()
 
 	log.Info().Msgf("%v", th)
+
+	// dump commit hash map
+	bson, err := utils.DumpSyncMapToJSON(&th.CommitHashStateMap)
+	if err != nil {
+		log.Error().Err(err).Msgf("failed to JSON marshal commit hash map")
+	}
+
+	if err := os.WriteFile(*commitHashMapFile, bson, 511); err != nil {
+		log.Error().Err(err).Msgf("failed to write commit hash map to file: %s", *commitHashMapFile)
+	}
 
 	if err := utils.DumpJson(*outputFile, th); err != nil {
 		log.Error().Err(err).Msgf("failed to store output file at path %s", *outputFile)

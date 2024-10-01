@@ -57,3 +57,5 @@ Temporary Items
 ### MassHog Files ###
 *.txt
 results.json
+chm.json
+state.json

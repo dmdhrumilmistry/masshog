@@ -25,6 +25,9 @@ type Trufflehog struct {
 	GithubToken    string `json:"-"` // github token for scanning private repos
 	GithubUsername string `json:"-"` // github username for auth while scanning private repos
 
+	// for storing commit hash states
+	CommitHashStateMap sync.Map `json:"-"`
+
 	// For Processing
 	DataIgnored    []map[string]interface{} `json:"ignored_secrets"`
 	DataVerified   []map[string]interface{} `json:"verified_secrets"`
@@ -72,17 +75,28 @@ func (t *Trufflehog) ScanRepo(repo github.Repo) error {
 		cloneUrl = repo.GetCloneUrl(t.GithubUsername, t.GithubToken)
 	}
 
-	log.Info().Msgf("Scanning repo %s", repo.HttpsUrl)
 	commandArgs := []string{"git", cloneUrl, "--json", "--no-update"}
+
+	// get latest commit hash
+	if err := repo.GetCommitHash(t.GithubToken); err != nil {
+		log.Error().Err(err).Msgf("failed to fetch latest commit hash for repo: %s", repo.HttpsUrl)
+	}
+
+	oldCommitHash, ok := t.CommitHashStateMap.Load(repo.HttpsUrl)
+	if ok {
+		if oldCommitHash == repo.CommitHash {
+			log.Info().Msgf("Skipping scanning repo since there are no new commits after %s for repo %s", repo.CommitHash, repo.HttpsUrl)
+			return nil
+		} else {
+			commandArgs = append(commandArgs, fmt.Sprintf("--since-commit=%s", oldCommitHash))
+		}
+	}
 
 	if t.OnlyVerified {
 		commandArgs = append(commandArgs, "--only-verified")
 	}
 
-	if repo.CommitHash != "" {
-		commandArgs = append(commandArgs, fmt.Sprintf("--since-commit=%s", repo.CommitHash))
-	}
-
+	log.Info().Msgf("Scanning repo %s", repo.HttpsUrl)
 	cmd := exec.CommandContext(ctx, t.Path, commandArgs...)
 
 	var stdout, stderr strings.Builder
@@ -117,6 +131,9 @@ func (t *Trufflehog) ScanRepo(repo github.Repo) error {
 	if exitStatus != 0 {
 		return fmt.Errorf("trufflehog command returned exit code %d instead of 0", exitStatus)
 	}
+
+	// save latest commit hash to map after successful run
+	t.CommitHashStateMap.Store(repo.HttpsUrl, repo.CommitHash)
 
 	// Process Result
 	for lineCount, line := range strings.Split((stderr.String() + stdout.String()), "\n") {
