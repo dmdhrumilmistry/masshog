@@ -1,41 +1,52 @@
 package trufflehog
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/dmdhrumilmistry/masshog/pkg/github"
 	"github.com/rs/zerolog/log"
 )
 
 type Trufflehog struct {
-	Path         string // binary path
-	Concurrency  int    // trufflehog concurreny to be used for scanning
-	Workers      int    // golang concurrency workers
-	OnlyVerified bool   // only verified flag from trufflehog
+	Path         string `json:"path"`          // binary path
+	Concurrency  int    `json:"concurrency"`   // trufflehog concurreny to be used for scanning
+	Workers      int    `json:"workers"`       // golang concurrency workers
+	OnlyVerified bool   `json:"only_verified"` // only verified flag from trufflehog
+	Timeout      int    `json:"timeout"`       // kills trufflehog command execution after x seconds
+
+	// Github authentication
+	GithubToken    string `json:"-"` // github token for scanning private repos
+	GithubUsername string `json:"-"` // github username for auth while scanning private repos
 
 	// For Processing
-	DataIgnored    []map[string]interface{}
-	DataVerified   []map[string]interface{}
-	DataUnverified []map[string]interface{}
-	exceptions     []error
-	lock           sync.Mutex
+	DataIgnored    []map[string]interface{} `json:"ignored_secrets"`
+	DataVerified   []map[string]interface{} `json:"verified_secrets"`
+	DataUnverified []map[string]interface{} `json:"unverified_secrets"`
+	exceptions     []error                  `json:"-"`
+	lock           sync.Mutex               `json:"-"`
 
 	// Channels for worker pattern
-	jobs    chan github.Repo
-	results chan error
+	jobs    chan github.Repo `json:"-"`
+	results chan error       `json:"-"`
 }
 
-func NewTrufflehog(path string, workers, batchSize, concurrency int, onlyVerified bool) *Trufflehog {
+func NewTrufflehog(path string, workers, batchSize, concurrency, timeout int, onlyVerified bool, githubUsername, githubToken string) *Trufflehog {
 	th := &Trufflehog{
 		Path:         path,
 		Concurrency:  concurrency,
 		OnlyVerified: onlyVerified,
 		Workers:      workers,
+		Timeout:      timeout,
+
+		GithubUsername: githubUsername,
+		GithubToken:    githubToken,
 	}
 
 	th.InitChannels(batchSize)
@@ -52,10 +63,17 @@ func (th *Trufflehog) CloseChannels() {
 }
 
 func (t *Trufflehog) ScanRepo(repo github.Repo) error {
-	// TODO: mask https url with token
-	maskedUrl := repo.HttpsUrl
-	log.Info().Msgf("Scanning repo %s", maskedUrl)
-	commandArgs := []string{"git", repo.HttpsUrl, "--json", "--no-update"}
+	// Set a timeout duration for the command
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(t.Timeout)*time.Second)
+	defer cancel() // Ensure that resources are cleaned up after the timeout
+
+	cloneUrl := repo.HttpsUrl
+	if t.GithubToken != "" && t.GithubUsername != "" {
+		cloneUrl = repo.GetCloneUrl(t.GithubUsername, t.GithubToken)
+	}
+
+	log.Info().Msgf("Scanning repo %s", repo.HttpsUrl)
+	commandArgs := []string{"git", cloneUrl, "--json", "--no-update"}
 
 	if t.OnlyVerified {
 		commandArgs = append(commandArgs, "--only-verified")
@@ -65,7 +83,7 @@ func (t *Trufflehog) ScanRepo(repo github.Repo) error {
 		commandArgs = append(commandArgs, fmt.Sprintf("--since-commit=%s", repo.CommitHash))
 	}
 
-	cmd := exec.Command(t.Path, commandArgs...)
+	cmd := exec.CommandContext(ctx, t.Path, commandArgs...)
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
@@ -77,7 +95,11 @@ func (t *Trufflehog) ScanRepo(repo github.Repo) error {
 	// Get exit status
 	exitStatus := 0
 
-	if err != nil {
+	// Handle different outcomes
+	if ctx.Err() == context.DeadlineExceeded {
+		log.Error().Err(ctx.Err()).Msgf("timeout reached while scanning repo %s", repo.HttpsUrl)
+		return ctx.Err()
+	} else if err != nil {
 		// If an error occurred, check if it's an exit error and get exit status
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {

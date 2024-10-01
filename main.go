@@ -51,6 +51,13 @@ func main() {
 	concurrency := flag.Int("c", 10, "trufflehog scan concurrency")
 	onlyVerified := flag.Bool("ov", false, "only provides verified secrets in output")
 	batchSize := flag.Int("bs", 100, "batch processing size")
+	timeout := flag.Int("t", 60, "timeout for a trufflehog scan")
+
+	username := flag.String("gu", "", "github username for scanning private repos")
+	token := flag.String("gt", "", "github token for scanning private repos")
+
+	outputFile := flag.String("o", "results.json", "file path for storing json result file")
+
 	flag.Parse()
 
 	if *filePath == "" {
@@ -78,9 +85,13 @@ func main() {
 	log.Debug().Int("batch size", *batchSize).Msg("")
 
 	// add jobs and init scan using workers
-	th := trufflehog.NewTrufflehog(thPath, *workers, *batchSize, *concurrency, *onlyVerified)
+	th := trufflehog.NewTrufflehog(thPath, *workers, *batchSize, *concurrency, *timeout, *onlyVerified, *username, *token)
 	th.AddJobs(repos)
 	th.RunWorkers()
 
 	log.Info().Msgf("%v", th)
+
+	if err := utils.DumpJson(*outputFile, th); err != nil {
+		log.Error().Err(err).Msgf("failed to store output file at path %s", *outputFile)
+	}
 }
